@@ -151,24 +151,8 @@ def load_data(merged_mtime_ns: int | None = None):
     else:
         # Fallback cho môi trường cloud khi file merged chưa được đưa lên repo.
         source = load_comment_source()
-        videos = source.get("videos", [])
-        comments = []
-        for video in videos:
-            comments.extend(video.get("comments", []))
-
-        data = {
-            "videos": videos,
-            "comments": comments,
-            "metadata": {
-                "source": source.get("source", "unknown"),
-                "total_videos": source.get("total_videos", len(videos)),
-                "total_comments": source.get("total_comments", len(comments)),
-                "fallback": "loaded_from_comment_file",
-            },
-            "user": {
-                "username": source.get("username", "@unknown"),
-            },
-        }
+        data = _build_data_from_comment_source(source)
+        data.setdefault("metadata", {})["fallback"] = "loaded_from_comment_file"
 
         # Tự tạo merged file để các lần chạy sau dùng lại dữ liệu ổn định hơn.
         try:
@@ -192,6 +176,77 @@ def load_comment_source():
         return {"videos": []}
     with open(COMMENT_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _build_data_from_comment_source(source: dict) -> dict:
+    """Chuẩn hóa dữ liệu kiểu tong_hop_comment.json thành cấu trúc dashboard."""
+    videos = source.get("videos", [])
+    comments = []
+    for video in videos:
+        comments.extend(video.get("comments", []))
+
+    return {
+        "videos": videos,
+        "comments": comments,
+        "metadata": {
+            "source": source.get("source", "uploaded"),
+            "total_videos": source.get("total_videos", len(videos)),
+            "total_comments": source.get("total_comments", len(comments)),
+            "fallback": "loaded_from_uploaded_file",
+        },
+        "user": {
+            "username": source.get("username", "@unknown"),
+        },
+    }
+
+
+def _parse_uploaded_dataset(uploaded_file):
+    """Đọc dataset upload (JSON/CSV) và trả về cấu trúc data chuẩn cho dashboard."""
+    filename = str(getattr(uploaded_file, "name", "")).lower()
+
+    if filename.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+        comments = df.to_dict(orient="records")
+        return {
+            "videos": [],
+            "comments": comments,
+            "metadata": {
+                "source": "uploaded_csv",
+                "total_videos": 0,
+                "total_comments": len(comments),
+                "fallback": "loaded_from_uploaded_file",
+            },
+            "user": {"username": "@uploaded"},
+        }
+
+    payload = json.load(uploaded_file)
+
+    # merged format
+    if isinstance(payload, dict) and ("videos" in payload or "comments" in payload):
+        has_merged_shape = isinstance(payload.get("comments", []), list) and isinstance(payload.get("videos", []), list)
+        if has_merged_shape and ("metadata" in payload or "user" in payload):
+            payload.setdefault("metadata", {})
+            payload.setdefault("user", {"username": "@uploaded"})
+            payload["metadata"].setdefault("fallback", "loaded_from_uploaded_file")
+            return payload
+
+        # tong_hop_comment format
+        return _build_data_from_comment_source(payload)
+
+    raise ValueError("Dinh dang file khong duoc ho tro.")
+
+
+def _get_runtime_data(default_data: tuple[list, list, dict, dict]) -> tuple[list, list, dict, dict]:
+    """Ưu tiên dữ liệu upload trong session cho môi trường cloud không có data file."""
+    uploaded_data = st.session_state.get("uploaded_runtime_data")
+    if not uploaded_data:
+        return default_data
+    return (
+        uploaded_data.get("videos", []),
+        uploaded_data.get("comments", []),
+        uploaded_data.get("metadata", {}),
+        uploaded_data.get("user", {}),
+    )
 
 
 def save_comment_source(data):
@@ -3526,7 +3581,26 @@ def main():
     page = sidebar()
     merged_exists_before_load = MERGED_FILE.exists()
     merged_mtime = MERGED_FILE.stat().st_mtime_ns if merged_exists_before_load else None
-    videos, comments, metadata, user = load_data(merged_mtime)
+    videos, comments, metadata, user = _get_runtime_data(load_data(merged_mtime))
+
+    if not comments:
+        with st.sidebar:
+            st.divider()
+            st.markdown("### Nap du lieu cho Cloud")
+            st.caption("Upload file merged JSON, tong_hop_comment.json, hoac CSV comment de chay tam thoi.")
+            uploaded_dataset = st.file_uploader(
+                "Chon file du lieu",
+                type=["json", "csv"],
+                key="runtime_dataset_uploader",
+            )
+            if uploaded_dataset is not None:
+                try:
+                    parsed_data = _parse_uploaded_dataset(uploaded_dataset)
+                    st.session_state["uploaded_runtime_data"] = parsed_data
+                    st.success("Da nap du lieu upload vao phien lam viec hien tai.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Khong doc duoc du lieu upload: {e}")
 
     if (not merged_exists_before_load) and (not comments):
         st.warning(
