@@ -64,6 +64,8 @@ EMOJI_MAP = {
 
 ID2LABEL = {0: 'positive', 1: 'neutral', 2: 'negative'}
 
+_HF_MODEL_ID = 'LeTuanKhaTTD/phobert-tvu-sentiment'
+
 # ── Default model path ────────────────────────────────────────────────────────
 _DEFAULT_PATHS = [
     Path(__file__).parent.parent / 'models' / 'phobert_tvu_sentiment',
@@ -120,35 +122,24 @@ class PhoBERTSentiment:
                 "Hoặc: pip install torch transformers --index-url https://download.pytorch.org/whl/cpu"
             )
 
-        # Tìm model path
+        # Mặc định load model từ Hugging Face Hub.
         if model_path is None:
-            for p in _DEFAULT_PATHS:
-                if _is_model_dir(p):
-                    model_path = p
-                    break
-            if model_path is None:
-                raise FileNotFoundError(
-                    "Không tìm thấy model PhoBERT.\n"
-                    "Hãy giải nén phobert_tvu_sentiment.zip vào MỘT trong các vị trí:\n"
-                    "  tiktok_analytics/models/phobert_tvu_sentiment/\n"
-                    "  tiktok_analytics/models/\n"
-                    "Xem hướng dẫn trong phobert_finetune.ipynb"
-                )
+            model_path = _HF_MODEL_ID
 
-        model_path = Path(model_path)
         self.model_path = str(model_path)
         self.max_len    = max_len
         self.device     = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-        self.model     = AutoModelForSequenceClassification.from_pretrained(str(model_path))
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
+        self.model     = AutoModelForSequenceClassification.from_pretrained(self.model_path)
         self.model     = self.model.to(self.device)
         self.model.eval()
 
         # Đọc metadata nếu có
-        meta_file = model_path / 'training_metadata.json'
+        model_dir = Path(self.model_path)
+        meta_file = model_dir / 'training_metadata.json'
         self.metadata = {}
-        if meta_file.exists():
+        if model_dir.exists() and meta_file.exists():
             with open(meta_file, encoding='utf-8') as f:
                 self.metadata = json.load(f)
 
@@ -286,17 +277,9 @@ class PhoBERTSentiment:
 
 def is_model_available() -> bool:
     """Kiểm tra xem model đã được cài đặt chưa."""
-    if not _TORCH_AVAILABLE:
-        return False
-    for p in _DEFAULT_PATHS:
-        if _is_model_dir(p):
-            return True
-    return False
+    return _TORCH_AVAILABLE
 
 
 def get_model_path() -> str | None:
     """Trả về đường dẫn đến model nếu có."""
-    for p in _DEFAULT_PATHS:
-        if _is_model_dir(p):
-            return str(p)
-    return None
+    return _HF_MODEL_ID if _TORCH_AVAILABLE else None
