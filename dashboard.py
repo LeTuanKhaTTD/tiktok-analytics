@@ -145,8 +145,30 @@ st.set_page_config(
 def load_data(merged_mtime_ns: int | None = None):
     """Tải dữ liệu từ file merged JSON"""
     _ = merged_mtime_ns
-    with open(MERGED_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    if MERGED_FILE.exists():
+        with open(MERGED_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        # Fallback cho môi trường cloud khi file merged chưa được đưa lên repo.
+        source = load_comment_source()
+        videos = source.get("videos", [])
+        comments = []
+        for video in videos:
+            comments.extend(video.get("comments", []))
+
+        data = {
+            "videos": videos,
+            "comments": comments,
+            "metadata": {
+                "source": source.get("source", "unknown"),
+                "total_videos": source.get("total_videos", len(videos)),
+                "total_comments": source.get("total_comments", len(comments)),
+                "fallback": "loaded_from_comment_file",
+            },
+            "user": {
+                "username": source.get("username", "@unknown"),
+            },
+        }
 
     videos = data.get("videos", [])
     comments = data.get("comments", [])
@@ -157,6 +179,8 @@ def load_data(merged_mtime_ns: int | None = None):
 
 def load_comment_source():
     """Tải file tong_hop_comment.json (nguồn gốc comment + sentiment)"""
+    if not COMMENT_FILE.exists():
+        return {"videos": []}
     with open(COMMENT_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -249,15 +273,16 @@ def _persist_prediction_updates(updates: dict, comments_ref: list | None = None)
         _apply_prediction_updates(video.get("comments", []), updates, touched_keys)
     save_comment_source(comment_data)
 
-    with open(MERGED_FILE, "r", encoding="utf-8") as f:
-        merged = json.load(f)
+    if MERGED_FILE.exists():
+        with open(MERGED_FILE, "r", encoding="utf-8") as f:
+            merged = json.load(f)
 
-    _apply_prediction_updates(merged.get("comments", []), updates)
-    for video in merged.get("videos", []):
-        _apply_prediction_updates(video.get("comments", []), updates)
+        _apply_prediction_updates(merged.get("comments", []), updates)
+        for video in merged.get("videos", []):
+            _apply_prediction_updates(video.get("comments", []), updates)
 
-    with open(MERGED_FILE, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
+        with open(MERGED_FILE, "w", encoding="utf-8") as f:
+            json.dump(merged, f, ensure_ascii=False, indent=2)
 
     if comments_ref is not None:
         _apply_prediction_updates(comments_ref, updates)
@@ -3482,6 +3507,12 @@ def main():
     page = sidebar()
     merged_mtime = MERGED_FILE.stat().st_mtime_ns if MERGED_FILE.exists() else None
     videos, comments, metadata, user = load_data(merged_mtime)
+
+    if not MERGED_FILE.exists():
+        st.warning(
+            f"Khong tim thay du lieu merged: {MERGED_FILE}. "
+            f"Dashboard dang fallback sang {COMMENT_FILE}."
+        )
 
     if page == "Tổng quan":
         page_overview(videos, comments, metadata, user)
