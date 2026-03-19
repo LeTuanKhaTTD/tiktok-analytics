@@ -170,6 +170,15 @@ def load_data(merged_mtime_ns: int | None = None):
             },
         }
 
+        # Tự tạo merged file để các lần chạy sau dùng lại dữ liệu ổn định hơn.
+        try:
+            MERGED_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(MERGED_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except OSError:
+            # Trên một số môi trường cloud có thể không cho ghi; vẫn tiếp tục chạy fallback.
+            pass
+
     videos = data.get("videos", [])
     comments = data.get("comments", [])
     metadata = data.get("metadata", {})
@@ -3508,7 +3517,7 @@ def main():
     merged_mtime = MERGED_FILE.stat().st_mtime_ns if MERGED_FILE.exists() else None
     videos, comments, metadata, user = load_data(merged_mtime)
 
-    if not MERGED_FILE.exists():
+    if metadata.get("fallback") == "loaded_from_comment_file":
         st.warning(
             f"Khong tim thay du lieu merged: {MERGED_FILE}. "
             f"Dashboard dang fallback sang {COMMENT_FILE}."
