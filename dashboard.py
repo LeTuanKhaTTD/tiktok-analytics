@@ -3514,13 +3514,16 @@ pip install torch transformers
 # ============================================================================
 def main():
     page = sidebar()
-    merged_mtime = MERGED_FILE.stat().st_mtime_ns if MERGED_FILE.exists() else None
+    merged_exists_before_load = MERGED_FILE.exists()
+    merged_mtime = MERGED_FILE.stat().st_mtime_ns if merged_exists_before_load else None
     videos, comments, metadata, user = load_data(merged_mtime)
 
-    if metadata.get("fallback") == "loaded_from_comment_file":
+    if (not merged_exists_before_load) and (not comments):
         st.warning(
-            f"Khong tim thay du lieu merged: {MERGED_FILE}. "
-            f"Dashboard dang fallback sang {COMMENT_FILE}."
+            f"Khong tim thay du lieu merged: {MERGED_FILE} va fallback {COMMENT_FILE}.")
+    elif (not merged_exists_before_load) and comments:
+        st.info(
+            f"Dang dung fallback tu {COMMENT_FILE} do file merged chua co tren cloud."
         )
 
     if page == "Tổng quan":
