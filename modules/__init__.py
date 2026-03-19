@@ -1,28 +1,35 @@
-"""
-Gói Modules - Các module phân tích YouTube & TikTok
+"""Modules package with lazy exports to avoid eager heavy imports at startup."""
 
-Các module chính:
-- YouTubeScraper: Thu thập dữ liệu YouTube (dùng YouTube Data API v3)
-- TikTokScraper: Thu thập dữ liệu TikTok qua Official API (cần OAuth)
-- TikTokAPICollector: Thu thập TikTok qua thư viện không chính thức
-- SentimentAnalyzer: Phân tích cảm xúc bình luận (PhoBERT, underthesea, VADER)
-- MetricsAnalyzer: Phân tích chỉ số tương tác (engagement metrics)
-- GeminiSentimentAnalyzer: Phân tích sentiment dùng Google Gemini AI
-"""
-
-from .youtube_scraper import YouTubeScraper
-from .tiktok_scraper import TikTokScraper
-from .sentiment_analyzer import SentimentAnalyzer
-from .metrics_analyzer import MetricsAnalyzer
-from .tiktok_api_scraper import TikTokAPICollector
-from .gemini_sentiment import GeminiSentimentAnalyzer, get_gemini_analyzer
+from importlib import import_module
 
 __all__ = [
-    'YouTubeScraper',
-    'TikTokScraper',
-    'SentimentAnalyzer',
-    'MetricsAnalyzer',
-    'TikTokAPICollector',
-    'GeminiSentimentAnalyzer',
-    'get_gemini_analyzer',
+    "YouTubeScraper",
+    "TikTokScraper",
+    "SentimentAnalyzer",
+    "MetricsAnalyzer",
+    "TikTokAPICollector",
+    "GeminiSentimentAnalyzer",
+    "get_gemini_analyzer",
 ]
+
+_SYMBOL_MAP = {
+    "YouTubeScraper": ("youtube_scraper", "YouTubeScraper"),
+    "TikTokScraper": ("tiktok_scraper", "TikTokScraper"),
+    "SentimentAnalyzer": ("sentiment_analyzer", "SentimentAnalyzer"),
+    "MetricsAnalyzer": ("metrics_analyzer", "MetricsAnalyzer"),
+    "TikTokAPICollector": ("tiktok_api_scraper", "TikTokAPICollector"),
+    "GeminiSentimentAnalyzer": ("gemini_sentiment", "GeminiSentimentAnalyzer"),
+    "get_gemini_analyzer": ("gemini_sentiment", "get_gemini_analyzer"),
+}
+
+
+def __getattr__(name):
+    """Load module members on demand instead of importing everything eagerly."""
+    if name not in _SYMBOL_MAP:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module_name, symbol_name = _SYMBOL_MAP[name]
+    module = import_module(f".{module_name}", __name__)
+    value = getattr(module, symbol_name)
+    globals()[name] = value
+    return value
