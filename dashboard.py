@@ -1545,11 +1545,20 @@ def page_export_import(videos, comments):
         st.subheader("Nhập nhãn thủ công từ Excel")
 
         uploaded = st.file_uploader(
-            "Chọn file Excel đã gán nhãn", type=["xlsx", "xls"]
+            "Chọn file Excel đã gán nhãn", type=["xlsx", "xlsm", "csv"]
         )
 
         if uploaded is not None:
-            df_import = pd.read_excel(uploaded, engine="openpyxl")
+            try:
+                uploaded_name = str(getattr(uploaded, "name", "")).lower()
+                if uploaded_name.endswith(".csv"):
+                    df_import = pd.read_csv(uploaded)
+                else:
+                    df_import = pd.read_excel(uploaded, engine="openpyxl")
+            except Exception as e:
+                st.error(f"Khong doc duoc file upload: {e}")
+                return
+
             st.write(f"Đã tải: **{len(df_import)} dòng**")
 
             # Kiểm tra cột manual_sentiment
@@ -1557,14 +1566,14 @@ def page_export_import(videos, comments):
                 st.error("❌ File thiếu cột `manual_sentiment`!")
                 return
 
+            manual_series = df_import["manual_sentiment"].fillna("").astype(str).str.strip()
+
             # Đếm nhãn đã gán
-            labeled = df_import[
-                df_import["manual_sentiment"].notna()
-                & (df_import["manual_sentiment"].str.strip() != "")
-            ]
+            labeled = df_import[manual_series != ""].copy()
+            labeled["manual_sentiment"] = manual_series[manual_series != ""]
 
             valid_labels = labeled[
-                labeled["manual_sentiment"].str.strip().str.lower().isin(
+                labeled["manual_sentiment"].str.lower().isin(
                     ["positive", "neutral", "negative"]
                 )
             ]
@@ -1626,26 +1635,27 @@ def _apply_excel_labels(labeled_df: pd.DataFrame) -> int:
     save_comment_source(comment_data)
 
     # --- Cập nhật merged file ---
-    with open(MERGED_FILE, "r", encoding="utf-8") as f:
-        merged = json.load(f)
+    if MERGED_FILE.exists():
+        with open(MERGED_FILE, "r", encoding="utf-8") as f:
+            merged = json.load(f)
 
-    for comment in merged.get("comments", []):
-        key = (str(comment.get("video_id", "")), _norm_text(comment.get("text", "")))
-        if key in label_map:
-            comment["sentiment"] = label_map[key]
-            comment["confidence"] = 1.0
-            comment["method"] = "manual"
-
-    for video in merged.get("videos", []):
-        for comment in video.get("comments", []):
+        for comment in merged.get("comments", []):
             key = (str(comment.get("video_id", "")), _norm_text(comment.get("text", "")))
             if key in label_map:
                 comment["sentiment"] = label_map[key]
                 comment["confidence"] = 1.0
                 comment["method"] = "manual"
 
-    with open(MERGED_FILE, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
+        for video in merged.get("videos", []):
+            for comment in video.get("comments", []):
+                key = (str(comment.get("video_id", "")), _norm_text(comment.get("text", "")))
+                if key in label_map:
+                    comment["sentiment"] = label_map[key]
+                    comment["confidence"] = 1.0
+                    comment["method"] = "manual"
+
+        with open(MERGED_FILE, "w", encoding="utf-8") as f:
+            json.dump(merged, f, ensure_ascii=False, indent=2)
 
     return count
 
