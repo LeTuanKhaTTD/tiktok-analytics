@@ -10,6 +10,10 @@ pip install -r requirements.txt
 
 ## 2) Chay Dashboard Streamlit
 
+> Ghi chu: day la app dashboard cu (`dashboard.py`).
+> Neu ban can luong dang nhap/dang ky + backend FastAPI + Supabase,
+> hay dung muc **15) Chay full-stack moi** o ben duoi.
+
 ```powershell
 cd D:\Thuc_tap\tiktok_analytics
 & D:\Thuc_tap\.venv-2\Scripts\Activate.ps1
@@ -154,6 +158,10 @@ Trong `phobert_finetune.ipynb`:
 Kich ban C da chuan hoa `method` trong file export de khong bi roi mat 83 dong method trong.
 
 ## 15) Chay full-stack moi (Frontend + Backend + Supabase)
+
+> Quan trong: Phai chay dong thoi **2 terminal**:
+> - Terminal A: backend FastAPI (port 8000)
+> - Terminal B: frontend Streamlit moi `frontend/app.py` (port 8501)
 
 ### 15.1 Cai dependencies full-stack
 
