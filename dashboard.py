@@ -145,6 +145,7 @@ EXPORT_DIR = Path("data/export")
 RUNTIME_DATA_FILE = Path("data/runtime/uploaded_dataset.json")
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 VALID_SENTIMENTS = ("positive", "neutral", "negative")
+DATA_MODE = os.getenv("DATA_MODE", "local").strip().lower()
 
 st.set_page_config(
     page_title="TikTok Analytics - TVU",
@@ -287,8 +288,14 @@ def _clear_runtime_data():
         pass
 
 
-def _get_runtime_data(default_data: tuple[list, list, dict, dict]) -> tuple[list, list, dict, dict]:
-    """Ưu tiên dữ liệu upload trong session cho môi trường cloud không có data file."""
+def _get_runtime_data(
+    default_data: tuple[list, list, dict, dict],
+    prefer_uploaded: bool = True,
+) -> tuple[list, list, dict, dict]:
+    """Chọn dữ liệu runtime theo mode: local-first hoặc cloud upload-first."""
+    if not prefer_uploaded:
+        return default_data
+
     uploaded_data = st.session_state.get("uploaded_runtime_data")
     if not uploaded_data:
         uploaded_data = _load_persisted_runtime_data()
@@ -879,6 +886,21 @@ def sidebar(videos: list | None = None, comments: list | None = None):
                     )
         except:
             pass
+
+        st.divider()
+        st.subheader("Trạng thái dữ liệu")
+        merged_ok = MERGED_FILE.exists()
+        comment_ok = COMMENT_FILE.exists()
+        runtime_ok = RUNTIME_DATA_FILE.exists() or ("uploaded_runtime_data" in st.session_state)
+        mode_label = "Local-first" if DATA_MODE != "cloud" else "Cloud"
+
+        st.caption(f"Mode: {mode_label}")
+        st.caption(f"Merged file: {'OK' if merged_ok else 'Missing'}")
+        st.caption(f"Comment file: {'OK' if comment_ok else 'Missing'}")
+        if runtime_ok:
+            st.caption("Runtime upload cache: Available")
+        else:
+            st.caption("Runtime upload cache: Empty")
         
         st.divider()
         
@@ -4035,13 +4057,23 @@ pip install torch transformers
 def main():
     merged_exists_before_load = MERGED_FILE.exists()
     merged_mtime = MERGED_FILE.stat().st_mtime_ns if merged_exists_before_load else None
-    videos, comments, metadata, user = _get_runtime_data(load_data(merged_mtime))
+    local_data_ready = MERGED_FILE.exists() or COMMENT_FILE.exists()
+    prefer_uploaded = (DATA_MODE == "cloud") or (not local_data_ready)
+    videos, comments, metadata, user = _get_runtime_data(
+        load_data(merged_mtime),
+        prefer_uploaded=prefer_uploaded,
+    )
     page = sidebar(videos=videos, comments=comments)
 
-    with st.expander("📥 Nạp dữ liệu cho bản Web (Cloud)", expanded=not comments):
+    show_cloud_uploader = (DATA_MODE == "cloud") or (not local_data_ready)
+    if show_cloud_uploader:
+        expander_title = "📥 Nạp dữ liệu cho bản Web (Cloud)"
+    else:
+        expander_title = "📥 Nạp dữ liệu bổ sung (tuỳ chọn)"
+
+    with st.expander(expander_title, expanded=(show_cloud_uploader and not comments)):
         st.caption(
-            "Tải file merged JSON, tong_hop_comment.json hoặc CSV. "
-            "Dữ liệu sẽ được lưu lại trên app để F5 không bị mất."
+            "Tải file merged JSON, tong_hop_comment.json hoặc CSV. Dữ liệu upload sẽ được lưu để F5 không mất."
         )
 
         up_col, act_col = st.columns([3, 1])
@@ -4069,10 +4101,10 @@ def main():
             except Exception as e:
                 st.error(f"Không đọc được dữ liệu upload: {e}")
 
-        st.markdown(
-            f"**Trạng thái hiện tại:** {len(comments)} comments | "
-            f"{len(videos)} videos | nguồn: {metadata.get('source', 'unknown')}"
-        )
+        st.markdown(f"**Hiện tại:** {len(comments)} comments | {len(videos)} videos | nguồn: {metadata.get('source', 'unknown')}")
+
+        if not show_cloud_uploader:
+            st.info("App đang chạy local-first: ưu tiên dữ liệu file local, upload chỉ dùng khi bạn muốn test nhanh.")
 
     if (not merged_exists_before_load) and (not comments):
         st.warning(
