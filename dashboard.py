@@ -399,7 +399,7 @@ def _persist_prediction_updates(updates: dict, comments_ref: list | None = None)
 # ============================================================================
 # SIDEBAR - ĐIỀU HƯỚNG
 # ============================================================================
-def sidebar():
+def sidebar(videos: list | None = None, comments: list | None = None):
     with st.sidebar:
         st.markdown(
             """
@@ -436,7 +436,10 @@ def sidebar():
         _sp1, _logo_col, _sp2 = st.columns([1, 2, 1])
         with _logo_col:
             if _logo_found:
-                st.image(str(_logo_found), width=120)
+                try:
+                    st.image(_logo_found.read_bytes(), width=120)
+                except OSError:
+                    st.image("https://www.tvu.edu.vn/wp-content/uploads/2020/03/logo-TVU-1.png", width=120)
             else:
                 st.image("https://www.tvu.edu.vn/wp-content/uploads/2020/03/logo-TVU-1.png", width=120)
 
@@ -471,13 +474,13 @@ def sidebar():
         # Quick stats trong sidebar
         st.subheader("Quick Stats")
         try:
-            merged_mtime = MERGED_FILE.stat().st_mtime_ns if MERGED_FILE.exists() else None
-            videos, comments, _, _ = load_data(merged_mtime)
-            df_c = _prepare_comments_df(comments)
+            videos_qs = videos if videos is not None else []
+            comments_qs = comments if comments is not None else []
+            df_c = _prepare_comments_df(comments_qs)
             df_labeled = _labeled_comments_df(df_c)
             
-            st.metric("Videos", len(videos))
-            st.metric("Comments", len(comments))
+            st.metric("Videos", len(videos_qs))
+            st.metric("Comments", len(comments_qs))
             st.metric("Labeled", len(df_labeled))
             st.metric("Unlabeled", int((df_c["sentiment"] == "unlabeled").sum()) if not df_c.empty else 0)
             
@@ -3620,10 +3623,10 @@ pip install torch transformers
 # MAIN
 # ============================================================================
 def main():
-    page = sidebar()
     merged_exists_before_load = MERGED_FILE.exists()
     merged_mtime = MERGED_FILE.stat().st_mtime_ns if merged_exists_before_load else None
     videos, comments, metadata, user = _get_runtime_data(load_data(merged_mtime))
+    page = sidebar(videos=videos, comments=comments)
 
     with st.expander("📥 Nạp dữ liệu cho bản Web (Cloud)", expanded=not comments):
         st.caption(
