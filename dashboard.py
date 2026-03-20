@@ -147,6 +147,19 @@ EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 VALID_SENTIMENTS = ("positive", "neutral", "negative")
 DATA_MODE = os.getenv("DATA_MODE", "local").strip().lower()
 
+MENU_OPTIONS = {
+    "📌 Tổng quan điều hành": "overview",
+    "🎬 Sentiment theo video": "video_sentiment",
+    "💬 Chi tiết bình luận": "comment_detail",
+    "🏷️ Gán nhãn thủ công": "manual_labeling",
+    "📤 Xuất / Nhập Excel": "excel",
+    "🤖 Đánh giá Gemini": "gemini_eval",
+    "🔥 Chủ đề & Viral": "topic_viral",
+    "🧭 Đề xuất cải thiện": "recommendations",
+    "🧹 Tiền xử lý Text": "text_preprocess",
+    "🧠 PhoBERT Fine-tuned": "phobert",
+}
+
 st.set_page_config(
     page_title="TikTok Analytics - TVU",
     page_icon="📊",
@@ -311,6 +324,17 @@ def _get_runtime_data(
         uploaded_data.get("metadata", {}),
         uploaded_data.get("user", {}),
     )
+
+
+def _data_status_message(comments_count: int, local_data_ready: bool, using_uploaded: bool) -> tuple[str, str]:
+    """Trả về thông điệp trạng thái dữ liệu ngắn gọn cho người dùng nội bộ."""
+    if comments_count <= 0:
+        return "warning", "Chưa có dữ liệu để phân tích. Hãy nạp dữ liệu hoặc kiểm tra file local."
+    if using_uploaded:
+        return "info", "Đang dùng dữ liệu upload runtime. Dữ liệu này ưu tiên cho phiên hiện tại."
+    if local_data_ready:
+        return "success", "Đang dùng dữ liệu local ổn định (ưu tiên cho vận hành nội bộ)."
+    return "info", "Đang dùng fallback dữ liệu tạm thời."
 
 
 def _compute_overview_metrics(videos: list, comments: list) -> dict:
@@ -839,22 +863,9 @@ def sidebar(videos: list | None = None, comments: list | None = None):
         st.divider()
         
         # Navigation
-        page = st.radio(
-            "Điều hướng",
-            [
-                "Tổng quan",
-                "Sentiment theo Video",
-                "Chi tiết bình luận",
-                "Gán nhãn thủ công",
-                "Xuất / Nhập Excel",
-                "Đánh giá Gemini",
-                "Phân tích Chủ đề & Viral",
-                "Đề xuất cải thiện",
-                "Tiền xử lý Text",
-                "PhoBERT Fine-tuned",
-            ],
-            label_visibility="collapsed"
-        )
+        menu_labels = list(MENU_OPTIONS.keys())
+        page_label = st.radio("Điều hướng", menu_labels, label_visibility="collapsed")
+        page = MENU_OPTIONS[page_label]
         
         st.divider()
         
@@ -894,13 +905,15 @@ def sidebar(videos: list | None = None, comments: list | None = None):
         runtime_ok = RUNTIME_DATA_FILE.exists() or ("uploaded_runtime_data" in st.session_state)
         mode_label = "Local-first" if DATA_MODE != "cloud" else "Cloud"
 
-        st.caption(f"Mode: {mode_label}")
-        st.caption(f"Merged file: {'OK' if merged_ok else 'Missing'}")
-        st.caption(f"Comment file: {'OK' if comment_ok else 'Missing'}")
-        if runtime_ok:
-            st.caption("Runtime upload cache: Available")
-        else:
-            st.caption("Runtime upload cache: Empty")
+        st.caption(f"Mode: {mode_label} | Merged: {'OK' if merged_ok else 'Missing'} | Comment: {'OK' if comment_ok else 'Missing'}")
+        st.caption(f"Runtime cache: {'Available' if runtime_ok else 'Empty'}")
+
+        show_tools = st.toggle(
+            "Hiển thị công cụ dữ liệu",
+            value=st.session_state.get("show_data_tools", False),
+            help="Bật khi cần nạp/xóa dữ liệu runtime. Mặc định ẩn để giao diện gọn hơn.",
+            key="show_data_tools",
+        )
         
         st.divider()
         
@@ -914,7 +927,7 @@ def sidebar(videos: list | None = None, comments: list | None = None):
         st.caption("Version: 2.0")
         st.caption("Updated: 2026-03-16")
     
-    return page
+    return page, show_tools
 
 
 # ============================================================================
@@ -1182,7 +1195,8 @@ def page_video_sentiment(videos, comments):
     total_comments_in_table = int(df_summary["Tổng comment"].sum())
 
     # --- Bộ lọc tổng hợp ---
-    st.markdown("#### Bộ lọc")
+    st.markdown("#### Bộ lọc dữ liệu video")
+    st.caption("Lọc nhanh theo quy mô thảo luận, sentiment trội và từ khóa mô tả.")
     max_comments = int(df_summary["Tổng comment"].max())
     default_state = {
         "tbl_min_comments": 1,
@@ -4063,7 +4077,16 @@ def main():
         load_data(merged_mtime),
         prefer_uploaded=prefer_uploaded,
     )
-    page = sidebar(videos=videos, comments=comments)
+    using_uploaded = bool(st.session_state.get("uploaded_runtime_data")) and prefer_uploaded
+    page, show_tools = sidebar(videos=videos, comments=comments)
+
+    status_level, status_message = _data_status_message(len(comments), local_data_ready, using_uploaded)
+    if status_level == "warning":
+        st.warning(status_message)
+    elif status_level == "success":
+        st.success(status_message)
+    else:
+        st.info(status_message)
 
     show_cloud_uploader = (DATA_MODE == "cloud") or (not local_data_ready)
     if show_cloud_uploader:
@@ -4071,68 +4094,64 @@ def main():
     else:
         expander_title = "📥 Nạp dữ liệu bổ sung (tuỳ chọn)"
 
-    with st.expander(expander_title, expanded=(show_cloud_uploader and not comments)):
-        st.caption(
-            "Tải file merged JSON, tong_hop_comment.json hoặc CSV. Dữ liệu upload sẽ được lưu để F5 không mất."
-        )
-
-        up_col, act_col = st.columns([3, 1])
-        with up_col:
-            uploaded_dataset = st.file_uploader(
-                "Chọn file dữ liệu",
-                type=["json", "csv"],
-                key="runtime_dataset_uploader",
+    if show_cloud_uploader or show_tools:
+        with st.expander(expander_title, expanded=(show_cloud_uploader and not comments and show_tools)):
+            st.caption(
+                "Tải file merged JSON, tong_hop_comment.json hoặc CSV. Dữ liệu upload sẽ được lưu để F5 không mất."
             )
-        with act_col:
-            st.write("")
-            if st.button("🧹 Xóa dữ liệu đã nạp", use_container_width=True):
-                _clear_runtime_data()
-                st.cache_data.clear()
-                st.rerun()
 
-        if uploaded_dataset is not None:
-            try:
-                parsed_data = _parse_uploaded_dataset(uploaded_dataset)
-                st.session_state["uploaded_runtime_data"] = parsed_data
-                _persist_runtime_data(parsed_data)
-                st.cache_data.clear()
-                st.success("Đã nạp và lưu dữ liệu upload thành công. F5 vẫn giữ dữ liệu.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Không đọc được dữ liệu upload: {e}")
+            up_col, act_col = st.columns([3, 1])
+            with up_col:
+                uploaded_dataset = st.file_uploader(
+                    "Chọn file dữ liệu",
+                    type=["json", "csv"],
+                    key="runtime_dataset_uploader",
+                )
+            with act_col:
+                st.write("")
+                if st.button("🧹 Xóa dữ liệu đã nạp", use_container_width=True):
+                    _clear_runtime_data()
+                    st.cache_data.clear()
+                    st.rerun()
 
-        st.markdown(f"**Hiện tại:** {len(comments)} comments | {len(videos)} videos | nguồn: {metadata.get('source', 'unknown')}")
+            if uploaded_dataset is not None:
+                try:
+                    parsed_data = _parse_uploaded_dataset(uploaded_dataset)
+                    st.session_state["uploaded_runtime_data"] = parsed_data
+                    _persist_runtime_data(parsed_data)
+                    st.cache_data.clear()
+                    st.success("Đã nạp và lưu dữ liệu upload thành công. F5 vẫn giữ dữ liệu.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Không đọc được dữ liệu upload: {e}")
 
-        if not show_cloud_uploader:
-            st.info("App đang chạy local-first: ưu tiên dữ liệu file local, upload chỉ dùng khi bạn muốn test nhanh.")
+            st.markdown(f"**Hiện tại:** {len(comments)} comments | {len(videos)} videos | nguồn: {metadata.get('source', 'unknown')}")
 
-    if (not merged_exists_before_load) and (not comments):
-        st.warning(
-            f"Khong tim thay du lieu merged: {MERGED_FILE} va fallback {COMMENT_FILE}.")
-    elif (not merged_exists_before_load) and comments:
-        st.info(
-            f"Dang dung fallback tu {COMMENT_FILE} do file merged chua co tren cloud."
-        )
+            if not show_cloud_uploader:
+                st.info("App đang chạy local-first: ưu tiên dữ liệu file local, upload chỉ dùng khi bạn muốn test nhanh.")
 
-    if page == "Tổng quan":
+    if not show_tools:
+        st.caption("Công cụ nạp dữ liệu đang được ẩn để giữ giao diện gọn. Bật trong sidebar nếu cần.")
+
+    if page == "overview":
         page_overview(videos, comments, metadata, user)
-    elif page == "Sentiment theo Video":
+    elif page == "video_sentiment":
         page_video_sentiment(videos, comments)
-    elif page == "Chi tiết bình luận":
+    elif page == "comment_detail":
         page_comment_detail(videos, comments)
-    elif page == "Gán nhãn thủ công":
+    elif page == "manual_labeling":
         page_manual_labeling(videos, comments)
-    elif page == "Xuất / Nhập Excel":
+    elif page == "excel":
         page_export_import(videos, comments)
-    elif page == "Đánh giá Gemini":
+    elif page == "gemini_eval":
         page_gemini_evaluation(comments)
-    elif page == "Phân tích Chủ đề & Viral":
+    elif page == "topic_viral":
         page_topic_analysis(videos, comments)
-    elif page == "Đề xuất cải thiện":
+    elif page == "recommendations":
         page_recommendations(videos, comments)
-    elif page == "Tiền xử lý Text":
+    elif page == "text_preprocess":
         page_text_preprocessing(comments)
-    elif page == "PhoBERT Fine-tuned":
+    elif page == "phobert":
         page_phobert(comments)
 
 
