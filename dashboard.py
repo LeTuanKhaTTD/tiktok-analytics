@@ -436,8 +436,10 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
     def _register_pdf_font() -> str:
         """Đăng ký font Unicode để hiển thị tiếng Việt đúng trong PDF."""
         candidates = [
+            Path(__file__).parent / "assets" / "Arial.ttf",
             Path(__file__).parent / "assets" / "DejaVuSans.ttf",
             Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
             Path("C:/Windows/Fonts/arial.ttf"),
         ]
         for path in candidates:
@@ -456,10 +458,11 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
         out = []
         for ch in str(text):
             cat = unicodedata.category(ch)
-            if cat == "So":
+            if cat in {"So", "Cs"}:
                 continue
             out.append(ch)
-        return "".join(out)
+        cleaned = "".join(out)
+        return cleaned.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     metrics = _compute_overview_metrics(videos, comments)
     topic_df = _topic_sentiment_summary(videos, comments).head(5)
@@ -486,15 +489,15 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
         except Exception:
             pass
 
-    story.append(Paragraph("BAO CAO TIKTOK ANALYTICS - TVU", styles["TVUTitle"]))
-    story.append(Paragraph(f"Thoi gian xuat bao cao: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["TVUSmall"]))
+    story.append(Paragraph("BÁO CÁO TIKTOK ANALYTICS - TVU", styles["TVUTitle"]))
+    story.append(Paragraph(f"Thời gian xuất báo cáo: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["TVUSmall"]))
     story.append(Paragraph(
-        f"Nguon du lieu: {_pdf_safe_text(metadata.get('source', 'unknown'))} | Tai khoan: {_pdf_safe_text(user.get('username', '@travinhuniversity'))}",
+        f"Nguồn dữ liệu: {_pdf_safe_text(metadata.get('source', 'unknown'))} | Tài khoản: {_pdf_safe_text(user.get('username', '@travinhuniversity'))}",
         styles["TVUSmall"],
     ))
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph("1) Tong quan metrics", styles["TVUHeading"]))
+    story.append(Paragraph("1) Tổng quan chỉ số", styles["TVUHeading"]))
     metric_table = Table([
         ["Videos", "Comments", "Views", "Likes", "Shares", "Engagement %"],
         [str(metrics["videos"]), str(metrics["comments"]), f"{metrics['views']:,}", f"{metrics['likes']:,}", f"{metrics['shares']:,}", f"{metrics['engagement']:.2f}"],
@@ -511,7 +514,7 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
     story.append(metric_table)
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph("2) Bieu do sentiment", styles["TVUHeading"]))
+    story.append(Paragraph("2) Biểu đồ sentiment", styles["TVUHeading"]))
     pie_data = [metrics["positive"], metrics["neutral"], metrics["negative"]]
     if sum(pie_data) == 0:
         pie_data = [1, 1, 1]
@@ -523,9 +526,9 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
     pie.height = 140
     pie.data = pie_data
     pie.labels = [
-        f"Positive ({metrics['positive']})",
-        f"Neutral ({metrics['neutral']})",
-        f"Negative ({metrics['negative']})",
+        f"Tích cực ({metrics['positive']})",
+        f"Trung tính ({metrics['neutral']})",
+        f"Tiêu cực ({metrics['negative']})",
     ]
     pie.slices[0].fillColor = colors.HexColor("#2ecc71")
     pie.slices[1].fillColor = colors.HexColor("#3498db")
@@ -535,7 +538,7 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
     story.append(Spacer(1, 8))
 
     if not topic_df.empty:
-        story.append(Paragraph("3) Hieu qua theo chu de", styles["TVUHeading"]))
+        story.append(Paragraph("3) Hiệu quả theo chủ đề", styles["TVUHeading"]))
         top_topics = topic_df.head(5)
         chart = VerticalBarChart()
         chart.x = 35
@@ -553,25 +556,25 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
         story.append(d_topic)
         story.append(Spacer(1, 6))
 
-    story.append(Paragraph("4) Insights va de xuat", styles["TVUHeading"]))
+    story.append(Paragraph("4) Insights và đề xuất", styles["TVUHeading"]))
     insight_lines = []
     if not topic_df.empty:
         best_topic = topic_df.iloc[0]
         insight_lines.append(
-            f"- Chu de '{_pdf_safe_text(best_topic['topic'])}' co ty le positive cao nhat ({best_topic['positive_rate']:.1f}%)."
+            f"- Chủ đề '{_pdf_safe_text(best_topic['topic'])}' có tỷ lệ phản hồi tích cực cao nhất ({best_topic['positive_rate']:.1f}%)."
         )
     if not slot_df.empty:
         top_slots = ", ".join([f"{_pdf_safe_text(r.day)} {r.slot}" for r in slot_df.itertuples(index=False)])
-        insight_lines.append(f"- Khung gio dang de xuat: {top_slots}.")
-    insight_lines.append(f"- So comment tieu cuc can uu tien xu ly: {len(neg_df)}.")
+        insight_lines.append(f"- Khung giờ đăng đề xuất: {top_slots}.")
+    insight_lines.append(f"- Số comment tiêu cực cần ưu tiên xử lý: {len(neg_df)}.")
 
     for ln in insight_lines:
         story.append(Paragraph(_pdf_safe_text(ln), styles["TVUNormal"]))
     story.append(Spacer(1, 8))
 
     if not neg_df.empty:
-        story.append(Paragraph("5) Danh sach comment tieu cuc uu tien", styles["TVUHeading"]))
-        neg_rows = [["Tac gia", "Likes", "Noi dung comment"]]
+        story.append(Paragraph("5) Danh sách comment tiêu cực ưu tiên", styles["TVUHeading"]))
+        neg_rows = [["Tác giả", "Likes", "Nội dung comment"]]
         for row in neg_df.itertuples(index=False):
             neg_rows.append([
                 _pdf_safe_text(str(getattr(row, "author", ""))[:20]),
@@ -589,7 +592,7 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
         story.append(neg_table)
 
     story.append(Spacer(1, 12))
-    story.append(Paragraph("Bao cao tu dong tu TVU TikTok Analytics Dashboard", styles["TVUSmall"]))
+    story.append(Paragraph("Báo cáo tự động từ TVU TikTok Analytics Dashboard", styles["TVUSmall"]))
 
     doc.build(story)
     return buf.getvalue()
