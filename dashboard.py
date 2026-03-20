@@ -8,6 +8,7 @@ Chạy: streamlit run dashboard.py
 import json
 import os
 import io
+import unicodedata
 from pathlib import Path
 from datetime import datetime
 
@@ -20,11 +21,13 @@ import time
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
     from reportlab.graphics.shapes import Drawing
     from reportlab.graphics.charts.piecharts import Pie
     from reportlab.graphics.charts.barcharts import VerticalBarChart
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     _PDF_REPORT_AVAILABLE = True
 except ImportError:
     _PDF_REPORT_AVAILABLE = False
@@ -426,26 +429,72 @@ def _best_posting_slots(videos: list) -> pd.DataFrame:
 
 
 def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) -> bytes:
-    """Tạo báo cáo PDF tóm tắt cho admin."""
+    """Tạo báo cáo PDF chuyên nghiệp cho admin TVU."""
     if not _PDF_REPORT_AVAILABLE:
         raise RuntimeError("PDF engine not available")
+
+    def _register_pdf_font() -> str:
+        """Đăng ký font Unicode để hiển thị tiếng Việt đúng trong PDF."""
+        candidates = [
+            Path(__file__).parent / "assets" / "DejaVuSans.ttf",
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("C:/Windows/Fonts/arial.ttf"),
+        ]
+        for path in candidates:
+            if path.exists():
+                try:
+                    pdfmetrics.registerFont(TTFont("TVUUnicode", str(path)))
+                    return "TVUUnicode"
+                except Exception:
+                    continue
+        return "Helvetica"
+
+    def _pdf_safe_text(text: str) -> str:
+        """Lọc ký tự dễ lỗi font trong PDF (emoji/symbol), vẫn giữ tiếng Việt."""
+        if text is None:
+            return ""
+        out = []
+        for ch in str(text):
+            cat = unicodedata.category(ch)
+            if cat == "So":
+                continue
+            out.append(ch)
+        return "".join(out)
 
     metrics = _compute_overview_metrics(videos, comments)
     topic_df = _topic_sentiment_summary(videos, comments).head(5)
     slot_df = _best_posting_slots(videos).head(3)
     neg_df = _get_negative_comment_alerts(comments, limit=5)
 
+    font_name = _register_pdf_font()
+
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=24, rightMargin=24, topMargin=20, bottomMargin=24)
     styles = getSampleStyleSheet()
+
+    styles.add(ParagraphStyle(name="TVUTitle", parent=styles["Title"], fontName=font_name, fontSize=20, leading=24, textColor=colors.HexColor("#12355b")))
+    styles.add(ParagraphStyle(name="TVUHeading", parent=styles["Heading2"], fontName=font_name, fontSize=13, leading=16, textColor=colors.HexColor("#12355b")))
+    styles.add(ParagraphStyle(name="TVUNormal", parent=styles["Normal"], fontName=font_name, fontSize=10.2, leading=14))
+    styles.add(ParagraphStyle(name="TVUSmall", parent=styles["Normal"], fontName=font_name, fontSize=8.8, leading=12, textColor=colors.HexColor("#4b5563")))
+
     story = []
 
-    story.append(Paragraph("TikTok Analytics Report - TVU", styles["Title"]))
-    story.append(Paragraph(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]))
-    story.append(Paragraph(f"Source: {metadata.get('source', 'unknown')} | Account: {user.get('username', '@travinhuniversity')}", styles["Normal"]))
+    logo_path = Path(__file__).parent / "assets" / "logo_tvu.png"
+    if logo_path.exists():
+        try:
+            story.append(Image(str(logo_path), width=58, height=58))
+        except Exception:
+            pass
+
+    story.append(Paragraph("BAO CAO TIKTOK ANALYTICS - TVU", styles["TVUTitle"]))
+    story.append(Paragraph(f"Thoi gian xuat bao cao: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["TVUSmall"]))
+    story.append(Paragraph(
+        f"Nguon du lieu: {_pdf_safe_text(metadata.get('source', 'unknown'))} | Tai khoan: {_pdf_safe_text(user.get('username', '@travinhuniversity'))}",
+        styles["TVUSmall"],
+    ))
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph("1) Metrics", styles["Heading2"]))
+    story.append(Paragraph("1) Tong quan metrics", styles["TVUHeading"]))
     metric_table = Table([
         ["Videos", "Comments", "Views", "Likes", "Shares", "Engagement %"],
         [str(metrics["videos"]), str(metrics["comments"]), f"{metrics['views']:,}", f"{metrics['likes']:,}", f"{metrics['shares']:,}", f"{metrics['engagement']:.2f}"],
@@ -453,13 +502,16 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
     metric_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f4e78")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 9.8),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#f4f7fb")),
     ]))
     story.append(metric_table)
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph("2) Sentiment chart", styles["Heading2"]))
+    story.append(Paragraph("2) Bieu do sentiment", styles["TVUHeading"]))
     pie_data = [metrics["positive"], metrics["neutral"], metrics["negative"]]
     if sum(pie_data) == 0:
         pie_data = [1, 1, 1]
@@ -470,42 +522,74 @@ def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) 
     pie.width = 160
     pie.height = 140
     pie.data = pie_data
-    pie.labels = ["Positive", "Neutral", "Negative"]
+    pie.labels = [
+        f"Positive ({metrics['positive']})",
+        f"Neutral ({metrics['neutral']})",
+        f"Negative ({metrics['negative']})",
+    ]
     pie.slices[0].fillColor = colors.HexColor("#2ecc71")
     pie.slices[1].fillColor = colors.HexColor("#3498db")
     pie.slices[2].fillColor = colors.HexColor("#e74c3c")
     drawing.add(pie)
     story.append(drawing)
+    story.append(Spacer(1, 8))
 
-    story.append(Paragraph("3) Insights", styles["Heading2"]))
+    if not topic_df.empty:
+        story.append(Paragraph("3) Hieu qua theo chu de", styles["TVUHeading"]))
+        top_topics = topic_df.head(5)
+        chart = VerticalBarChart()
+        chart.x = 35
+        chart.y = 25
+        chart.height = 120
+        chart.width = 400
+        chart.data = [list(top_topics["positive_rate"].round(1).values)]
+        chart.categoryAxis.categoryNames = [_pdf_safe_text(str(t))[:16] for t in top_topics["topic"].tolist()]
+        chart.valueAxis.valueMin = 0
+        chart.valueAxis.valueMax = 100
+        chart.valueAxis.valueStep = 20
+        chart.bars[0].fillColor = colors.HexColor("#2ecc71")
+        d_topic = Drawing(470, 170)
+        d_topic.add(chart)
+        story.append(d_topic)
+        story.append(Spacer(1, 6))
+
+    story.append(Paragraph("4) Insights va de xuat", styles["TVUHeading"]))
+    insight_lines = []
     if not topic_df.empty:
         best_topic = topic_df.iloc[0]
-        story.append(Paragraph(
-            f"- Topic '{best_topic['topic']}' has highest positive rate ({best_topic['positive_rate']:.1f}%).",
-            styles["Normal"],
-        ))
+        insight_lines.append(
+            f"- Chu de '{_pdf_safe_text(best_topic['topic'])}' co ty le positive cao nhat ({best_topic['positive_rate']:.1f}%)."
+        )
     if not slot_df.empty:
-        top_slots = ", ".join([f"{r.day} {r.slot}" for r in slot_df.itertuples(index=False)])
-        story.append(Paragraph(f"- Suggested posting windows: {top_slots}.", styles["Normal"]))
-    story.append(Paragraph(f"- Negative comments to prioritize: {len(neg_df)}.", styles["Normal"]))
+        top_slots = ", ".join([f"{_pdf_safe_text(r.day)} {r.slot}" for r in slot_df.itertuples(index=False)])
+        insight_lines.append(f"- Khung gio dang de xuat: {top_slots}.")
+    insight_lines.append(f"- So comment tieu cuc can uu tien xu ly: {len(neg_df)}.")
+
+    for ln in insight_lines:
+        story.append(Paragraph(_pdf_safe_text(ln), styles["TVUNormal"]))
     story.append(Spacer(1, 8))
 
     if not neg_df.empty:
-        story.append(Paragraph("4) Top negative comments", styles["Heading2"]))
-        neg_rows = [["Author", "Likes", "Comment"]]
+        story.append(Paragraph("5) Danh sach comment tieu cuc uu tien", styles["TVUHeading"]))
+        neg_rows = [["Tac gia", "Likes", "Noi dung comment"]]
         for row in neg_df.itertuples(index=False):
             neg_rows.append([
-                str(getattr(row, "author", ""))[:20],
+                _pdf_safe_text(str(getattr(row, "author", ""))[:20]),
                 str(int(getattr(row, "likes", 0))),
-                str(getattr(row, "text", ""))[:85],
+                _pdf_safe_text(str(getattr(row, "text", ""))[:95]),
             ])
         neg_table = Table(neg_rows, colWidths=[90, 45, 360])
         neg_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#fde2e2")),
+            ("FONTNAME", (0, 0), (-1, -1), font_name),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         story.append(neg_table)
+
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Bao cao tu dong tu TVU TikTok Analytics Dashboard", styles["TVUSmall"]))
 
     doc.build(story)
     return buf.getvalue()
