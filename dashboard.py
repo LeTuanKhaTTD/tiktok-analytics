@@ -17,6 +17,18 @@ import plotly.express as px
 import plotly.graph_objects as go
 import time
 
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.graphics.charts.piecharts import Pie
+    from reportlab.graphics.charts.barcharts import VerticalBarChart
+    _PDF_REPORT_AVAILABLE = True
+except ImportError:
+    _PDF_REPORT_AVAILABLE = False
+
 # Import config và modules
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
@@ -291,6 +303,286 @@ def _get_runtime_data(default_data: tuple[list, list, dict, dict]) -> tuple[list
     )
 
 
+def _compute_overview_metrics(videos: list, comments: list) -> dict:
+    """Tổng hợp metrics chính cho dashboard/report."""
+    df_c = _prepare_comments_df(comments)
+    df_labeled = _labeled_comments_df(df_c)
+
+    total_plays = sum(v.get("stats", {}).get("play_count", 0) for v in videos)
+    total_likes = sum(v.get("stats", {}).get("like_count", 0) for v in videos)
+    total_shares = sum(v.get("stats", {}).get("share_count", 0) for v in videos)
+    avg_engagement = ((total_likes + len(comments) + total_shares) / total_plays * 100) if total_plays > 0 else 0.0
+
+    pos = int((df_labeled["sentiment"] == "positive").sum()) if not df_labeled.empty else 0
+    neu = int((df_labeled["sentiment"] == "neutral").sum()) if not df_labeled.empty else 0
+    neg = int((df_labeled["sentiment"] == "negative").sum()) if not df_labeled.empty else 0
+
+    return {
+        "videos": len(videos),
+        "comments": len(comments),
+        "views": int(total_plays),
+        "likes": int(total_likes),
+        "shares": int(total_shares),
+        "engagement": float(avg_engagement),
+        "positive": pos,
+        "neutral": neu,
+        "negative": neg,
+        "labeled": int(len(df_labeled)),
+    }
+
+
+def _get_negative_comment_alerts(comments: list, limit: int = 5) -> pd.DataFrame:
+    """Lấy comment tiêu cực ưu tiên xử lý."""
+    df_c = _prepare_comments_df(comments)
+    if df_c.empty:
+        return pd.DataFrame()
+
+    neg_df = df_c[df_c["sentiment"] == "negative"].copy()
+    if neg_df.empty:
+        return pd.DataFrame()
+
+    neg_df["likes"] = pd.to_numeric(neg_df.get("likes", 0), errors="coerce").fillna(0)
+    neg_df["confidence"] = pd.to_numeric(neg_df.get("confidence", 0), errors="coerce").fillna(0)
+    neg_df = neg_df.sort_values(["likes", "confidence"], ascending=[False, False])
+
+    cols = [c for c in ["text", "author", "likes", "confidence", "video_id", "created_at"] if c in neg_df.columns]
+    return neg_df[cols].head(limit)
+
+
+def _topic_sentiment_summary(videos: list, comments: list) -> pd.DataFrame:
+    """Tổng hợp sentiment theo chủ đề video."""
+    df_c = _prepare_comments_df(comments)
+    if not videos:
+        return pd.DataFrame()
+
+    rows = []
+    for v in videos:
+        vid = str(v.get("id", ""))
+        topic = _classify_topic(v.get("description", "") or "", v.get("hashtags", []) or [])
+        vc = df_c[df_c["video_id"].astype(str) == vid] if not df_c.empty else pd.DataFrame()
+        pos = int((vc["sentiment"] == "positive").sum()) if not vc.empty else 0
+        neu = int((vc["sentiment"] == "neutral").sum()) if not vc.empty else 0
+        neg = int((vc["sentiment"] == "negative").sum()) if not vc.empty else 0
+        total = pos + neu + neg
+        rows.append({
+            "topic": topic,
+            "positive": pos,
+            "neutral": neu,
+            "negative": neg,
+            "total": total,
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    agg = df.groupby("topic", as_index=False)[["positive", "neutral", "negative", "total"]].sum()
+    agg["positive_rate"] = agg.apply(lambda r: (r["positive"] / r["total"] * 100) if r["total"] > 0 else 0, axis=1)
+    agg["negative_rate"] = agg.apply(lambda r: (r["negative"] / r["total"] * 100) if r["total"] > 0 else 0, axis=1)
+    return agg.sort_values("positive_rate", ascending=False)
+
+
+def _best_posting_slots(videos: list) -> pd.DataFrame:
+    """Gợi ý khung giờ đăng theo engagement của video lịch sử."""
+    if not videos:
+        return pd.DataFrame()
+
+    rows = []
+    day_map = {
+        "Monday": "Thu 2", "Tuesday": "Thu 3", "Wednesday": "Thu 4", "Thursday": "Thu 5",
+        "Friday": "Thu 6", "Saturday": "Thu 7", "Sunday": "Chu nhat",
+    }
+    for v in videos:
+        create_time = v.get("create_time")
+        dt = pd.to_datetime(create_time, errors="coerce", utc=True)
+        if pd.isna(dt):
+            continue
+
+        stats = v.get("stats", {}) or {}
+        plays = stats.get("play_count", 0) or 0
+        likes = stats.get("like_count", 0) or 0
+        comments = stats.get("comment_count", 0) or 0
+        shares = stats.get("share_count", 0) or 0
+        er = ((likes + comments + shares) / plays * 100) if plays > 0 else 0
+
+        hour = int(dt.hour)
+        bucket_start = (hour // 3) * 3
+        bucket_end = bucket_start + 2
+        day_name = day_map.get(dt.day_name(), dt.day_name())
+
+        rows.append({
+            "day": day_name,
+            "slot": f"{bucket_start:02d}-{bucket_end:02d}h",
+            "engagement": er,
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return (
+        df.groupby(["day", "slot"], as_index=False)
+        .agg(avg_engagement=("engagement", "mean"), videos=("engagement", "count"))
+        .sort_values(["avg_engagement", "videos"], ascending=[False, False])
+    )
+
+
+def _build_pdf_report(videos: list, comments: list, metadata: dict, user: dict) -> bytes:
+    """Tạo báo cáo PDF tóm tắt cho admin."""
+    if not _PDF_REPORT_AVAILABLE:
+        raise RuntimeError("PDF engine not available")
+
+    metrics = _compute_overview_metrics(videos, comments)
+    topic_df = _topic_sentiment_summary(videos, comments).head(5)
+    slot_df = _best_posting_slots(videos).head(3)
+    neg_df = _get_negative_comment_alerts(comments, limit=5)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("TikTok Analytics Report - TVU", styles["Title"]))
+    story.append(Paragraph(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]))
+    story.append(Paragraph(f"Source: {metadata.get('source', 'unknown')} | Account: {user.get('username', '@travinhuniversity')}", styles["Normal"]))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("1) Metrics", styles["Heading2"]))
+    metric_table = Table([
+        ["Videos", "Comments", "Views", "Likes", "Shares", "Engagement %"],
+        [str(metrics["videos"]), str(metrics["comments"]), f"{metrics['views']:,}", f"{metrics['likes']:,}", f"{metrics['shares']:,}", f"{metrics['engagement']:.2f}"],
+    ])
+    metric_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f4e78")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+    ]))
+    story.append(metric_table)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("2) Sentiment chart", styles["Heading2"]))
+    pie_data = [metrics["positive"], metrics["neutral"], metrics["negative"]]
+    if sum(pie_data) == 0:
+        pie_data = [1, 1, 1]
+    drawing = Drawing(320, 180)
+    pie = Pie()
+    pie.x = 65
+    pie.y = 20
+    pie.width = 160
+    pie.height = 140
+    pie.data = pie_data
+    pie.labels = ["Positive", "Neutral", "Negative"]
+    pie.slices[0].fillColor = colors.HexColor("#2ecc71")
+    pie.slices[1].fillColor = colors.HexColor("#3498db")
+    pie.slices[2].fillColor = colors.HexColor("#e74c3c")
+    drawing.add(pie)
+    story.append(drawing)
+
+    story.append(Paragraph("3) Insights", styles["Heading2"]))
+    if not topic_df.empty:
+        best_topic = topic_df.iloc[0]
+        story.append(Paragraph(
+            f"- Topic '{best_topic['topic']}' has highest positive rate ({best_topic['positive_rate']:.1f}%).",
+            styles["Normal"],
+        ))
+    if not slot_df.empty:
+        top_slots = ", ".join([f"{r.day} {r.slot}" for r in slot_df.itertuples(index=False)])
+        story.append(Paragraph(f"- Suggested posting windows: {top_slots}.", styles["Normal"]))
+    story.append(Paragraph(f"- Negative comments to prioritize: {len(neg_df)}.", styles["Normal"]))
+    story.append(Spacer(1, 8))
+
+    if not neg_df.empty:
+        story.append(Paragraph("4) Top negative comments", styles["Heading2"]))
+        neg_rows = [["Author", "Likes", "Comment"]]
+        for row in neg_df.itertuples(index=False):
+            neg_rows.append([
+                str(getattr(row, "author", ""))[:20],
+                str(int(getattr(row, "likes", 0))),
+                str(getattr(row, "text", ""))[:85],
+            ])
+        neg_table = Table(neg_rows, colWidths=[90, 45, 360])
+        neg_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#fde2e2")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(neg_table)
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def page_recommendations(videos: list, comments: list):
+    """Trang đề xuất cải thiện dựa trên dữ liệu hiện tại."""
+    st.title("Đề xuất cải thiện")
+    st.caption("Gợi ý nội dung, khung giờ đăng và cảnh báo comment tiêu cực để admin xử lý nhanh.")
+
+    topic_df = _topic_sentiment_summary(videos, comments)
+    slot_df = _best_posting_slots(videos)
+    neg_df = _get_negative_comment_alerts(comments, limit=5)
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.subheader("🎯 Chủ đề nên ưu tiên")
+        if topic_df.empty:
+            st.info("Chưa đủ dữ liệu để gợi ý chủ đề.")
+        else:
+            best_topic = topic_df.iloc[0]
+            st.success(
+                f"Video về chủ đề **{best_topic['topic']}** đang nhận nhiều phản hồi tích cực "
+                f"({best_topic['positive_rate']:.1f}% positive)."
+            )
+            st.dataframe(
+                topic_df[["topic", "positive_rate", "negative_rate", "total"]]
+                .rename(columns={
+                    "topic": "Chủ đề",
+                    "positive_rate": "% Positive",
+                    "negative_rate": "% Negative",
+                    "total": "Tổng nhãn",
+                })
+                .head(8),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with col_b:
+        st.subheader("🕒 Khung giờ đề xuất")
+        if slot_df.empty:
+            st.info("Chưa đủ dữ liệu thời gian đăng.")
+        else:
+            top3 = slot_df.head(3)
+            top_text = ", ".join([f"{r.day} {r.slot}" for r in top3.itertuples(index=False)])
+            st.success(f"Nên đăng trong các khung giờ: **{top_text}**")
+            st.dataframe(
+                top3.rename(columns={
+                    "day": "Thứ",
+                    "slot": "Khung giờ",
+                    "avg_engagement": "ER trung bình",
+                    "videos": "Số video",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    st.divider()
+    st.subheader("🚨 Notification comment tiêu cực")
+    if neg_df.empty:
+        st.success("Hiện chưa có comment tiêu cực nổi bật cần xử lý ngay.")
+    else:
+        st.error(f"Có **{len(neg_df)}** comment tiêu cực cần xử lý ngay.")
+        st.dataframe(
+            neg_df.rename(columns={
+                "text": "Comment",
+                "author": "Tác giả",
+                "likes": "Likes",
+                "confidence": "Confidence",
+                "video_id": "Video ID",
+                "created_at": "Thời gian",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def save_comment_source(data):
     """Lưu lại file tong_hop_comment.json sau khi sửa nhãn"""
     with open(COMMENT_FILE, "w", encoding="utf-8") as f:
@@ -463,6 +755,7 @@ def sidebar(videos: list | None = None, comments: list | None = None):
                 "Xuất / Nhập Excel",
                 "Đánh giá Gemini",
                 "Phân tích Chủ đề & Viral",
+                "Đề xuất cải thiện",
                 "Tiền xử lý Text",
                 "PhoBERT Fine-tuned",
             ],
@@ -487,6 +780,16 @@ def sidebar(videos: list | None = None, comments: list | None = None):
             if not df_labeled.empty:
                 pos_pct = (df_labeled["sentiment"] == "positive").sum() / len(df_labeled) * 100
                 st.caption(f"Positive rate (labeled): {pos_pct:.1f}%")
+
+            neg_alert_df = _get_negative_comment_alerts(comments_qs, limit=3)
+            if not neg_alert_df.empty:
+                st.error(f"Negative alert: {len(neg_alert_df)} comment cần xử lý")
+                with st.expander("Xem nhanh cảnh báo", expanded=False):
+                    st.dataframe(
+                        neg_alert_df[[c for c in ["author", "likes", "text"] if c in neg_alert_df.columns]],
+                        hide_index=True,
+                        use_container_width=True,
+                    )
         except:
             pass
         
@@ -511,6 +814,26 @@ def sidebar(videos: list | None = None, comments: list | None = None):
 def page_overview(videos, comments, metadata, user):
     st.title("Tổng quan TikTok Analytics")
     st.caption("Dashboard phân tích tương tác và cảm xúc người dùng TikTok")
+
+    with st.container(border=True):
+        st.markdown("### 📄 1-click xuất báo cáo PDF")
+        st.caption("Bao gồm metrics, biểu đồ sentiment và insights đề xuất cho admin TVU.")
+        if _PDF_REPORT_AVAILABLE:
+            try:
+                pdf_bytes = _build_pdf_report(videos, comments, metadata, user)
+                st.download_button(
+                    "⬇️ Xuất báo cáo PDF",
+                    data=pdf_bytes,
+                    file_name=f"tvu_tiktok_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Không tạo được PDF: {e}")
+        else:
+            st.info("Thiếu thư viện PDF engine. Cài `reportlab` để bật tính năng này.")
+
+    st.divider()
 
     # --- KPI Cards ---
     df_c = _prepare_comments_df(comments)
@@ -3686,6 +4009,8 @@ def main():
         page_gemini_evaluation(comments)
     elif page == "Phân tích Chủ đề & Viral":
         page_topic_analysis(videos, comments)
+    elif page == "Đề xuất cải thiện":
+        page_recommendations(videos, comments)
     elif page == "Tiền xử lý Text":
         page_text_preprocessing(comments)
     elif page == "PhoBERT Fine-tuned":
