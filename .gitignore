@@ -45,6 +45,7 @@ reports/
 *.html
 *.txt
 !requirements.txt
+!requirements-fullstack.txt
 !README.md
 
 # Logs
