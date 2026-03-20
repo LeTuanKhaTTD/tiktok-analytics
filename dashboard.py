@@ -127,6 +127,7 @@ def gemini_batch_label(comments: list, show_stats: bool = True) -> int:
 MERGED_FILE = Path("data/merged/tiktok_travinhuniversity_merged.json")
 COMMENT_FILE = Path("data/tong_hop_comment.json")
 EXPORT_DIR = Path("data/export")
+RUNTIME_DATA_FILE = Path("data/runtime/uploaded_dataset.json")
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 VALID_SENTIMENTS = ("positive", "neutral", "negative")
 
@@ -236,11 +237,52 @@ def _parse_uploaded_dataset(uploaded_file):
     raise ValueError("Dinh dang file khong duoc ho tro.")
 
 
+def _persist_runtime_data(data: dict):
+    """Lưu dữ liệu upload để giữ trạng thái khi F5 web."""
+    try:
+        RUNTIME_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(RUNTIME_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError:
+        # Nếu cloud không cho ghi file, app vẫn chạy bằng session_state.
+        pass
+
+
+def _load_persisted_runtime_data() -> dict | None:
+    """Đọc dữ liệu đã upload trước đó từ đĩa (nếu có)."""
+    if not RUNTIME_DATA_FILE.exists():
+        return None
+    try:
+        with open(RUNTIME_DATA_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            return payload
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _clear_runtime_data():
+    """Xóa dữ liệu upload trong session và file persist."""
+    st.session_state.pop("uploaded_runtime_data", None)
+    try:
+        if RUNTIME_DATA_FILE.exists():
+            RUNTIME_DATA_FILE.unlink()
+    except OSError:
+        pass
+
+
 def _get_runtime_data(default_data: tuple[list, list, dict, dict]) -> tuple[list, list, dict, dict]:
     """Ưu tiên dữ liệu upload trong session cho môi trường cloud không có data file."""
     uploaded_data = st.session_state.get("uploaded_runtime_data")
     if not uploaded_data:
+        uploaded_data = _load_persisted_runtime_data()
+        if uploaded_data:
+            st.session_state["uploaded_runtime_data"] = uploaded_data
+
+    if not uploaded_data:
         return default_data
+
     return (
         uploaded_data.get("videos", []),
         uploaded_data.get("comments", []),
@@ -3583,24 +3625,41 @@ def main():
     merged_mtime = MERGED_FILE.stat().st_mtime_ns if merged_exists_before_load else None
     videos, comments, metadata, user = _get_runtime_data(load_data(merged_mtime))
 
-    if not comments:
-        with st.sidebar:
-            st.divider()
-            st.markdown("### Nap du lieu cho Cloud")
-            st.caption("Upload file merged JSON, tong_hop_comment.json, hoac CSV comment de chay tam thoi.")
+    with st.expander("📥 Nạp dữ liệu cho bản Web (Cloud)", expanded=not comments):
+        st.caption(
+            "Tải file merged JSON, tong_hop_comment.json hoặc CSV. "
+            "Dữ liệu sẽ được lưu lại trên app để F5 không bị mất."
+        )
+
+        up_col, act_col = st.columns([3, 1])
+        with up_col:
             uploaded_dataset = st.file_uploader(
-                "Chon file du lieu",
+                "Chọn file dữ liệu",
                 type=["json", "csv"],
                 key="runtime_dataset_uploader",
             )
-            if uploaded_dataset is not None:
-                try:
-                    parsed_data = _parse_uploaded_dataset(uploaded_dataset)
-                    st.session_state["uploaded_runtime_data"] = parsed_data
-                    st.success("Da nap du lieu upload vao phien lam viec hien tai.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Khong doc duoc du lieu upload: {e}")
+        with act_col:
+            st.write("")
+            if st.button("🧹 Xóa dữ liệu đã nạp", use_container_width=True):
+                _clear_runtime_data()
+                st.cache_data.clear()
+                st.rerun()
+
+        if uploaded_dataset is not None:
+            try:
+                parsed_data = _parse_uploaded_dataset(uploaded_dataset)
+                st.session_state["uploaded_runtime_data"] = parsed_data
+                _persist_runtime_data(parsed_data)
+                st.cache_data.clear()
+                st.success("Đã nạp và lưu dữ liệu upload thành công. F5 vẫn giữ dữ liệu.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Không đọc được dữ liệu upload: {e}")
+
+        st.markdown(
+            f"**Trạng thái hiện tại:** {len(comments)} comments | "
+            f"{len(videos)} videos | nguồn: {metadata.get('source', 'unknown')}"
+        )
 
     if (not merged_exists_before_load) and (not comments):
         st.warning(
