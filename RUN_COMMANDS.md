@@ -152,3 +152,37 @@ Trong `phobert_finetune.ipynb`:
 - `DATA_PATH = 'data/export/retrain_all_labeled_2865.json'`
 
 Kich ban C da chuan hoa `method` trong file export de khong bi roi mat 83 dong method trong.
+
+## 15) Chay full-stack moi (Frontend + Backend + Supabase)
+
+### 15.1 Cai dependencies full-stack
+
+```powershell
+cd D:\Thuc_tap\tiktok_analytics
+& D:\Thuc_tap\.venv-2\Scripts\Activate.ps1
+pip install -r requirements-fullstack.txt
+```
+
+### 15.2 Chay Backend FastAPI
+
+```powershell
+cd D:\Thuc_tap\tiktok_analytics
+& D:\Thuc_tap\.venv-2\Scripts\Activate.ps1
+uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 15.3 Chay Frontend Streamlit moi
+
+```powershell
+cd D:\Thuc_tap\tiktok_analytics
+& D:\Thuc_tap\.venv-2\Scripts\Activate.ps1
+streamlit run frontend/app.py
+```
+
+### 15.4 Tao bang Supabase
+
+Chay file SQL sau trong Supabase SQL Editor:
+
+```text
+sql/supabase_schema.sql
+```
